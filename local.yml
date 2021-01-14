@@ -1,0 +1,7 @@
+# Role that installs FreshRSS in the local host
+---
+- hosts: localhost
+  gather_facts: yes
+  user: root
+  roles:
+    - freshrss

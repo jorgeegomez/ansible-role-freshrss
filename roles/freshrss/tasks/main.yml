@@ -1,0 +1,188 @@
+---
+- name: Download FreshRSS using Git
+  git:
+    repo: 'https://github.com/FreshRSS/FreshRSS.git'
+    dest: /opt/freshrss
+    depth: 1
+
+- name: Stop Playbook
+  fail:
+    msg: Ignore rest of the playbook
+
+- name: delete previous
+  file:
+    path: "{{ _freshrss.install_path }}"
+    state: absent
+  when: freshrss.reinstall == true
+
+- name: add ops_user to www-data group
+  user:
+    name: "{{ _freshrss.ops_user }}"
+    groups: www-data
+    append: yes
+  register: add_user_to_group
+  become: yes
+
+# this workaround task is mandatory for group membership
+# solution comes with ansible 2.3
+# see http://docs.ansible.com/ansible/meta_module.html
+- name: kill sshd
+  shell: sleep 1; pkill -u {{ ansible_ssh_user }} sshd
+  async: 3
+  poll: 2
+  when: add_user_to_group|changed
+
+- name: unarchive
+  unarchive:
+    src: "{{ _freshrss.download_url }}"
+    dest: "{{ _freshrss.apps_install_path }}"
+    copy: no
+    group: www-data
+    mode: u=rwX,g=rX,o=
+    creates: "{{ _freshrss.install_path }}"
+  register: _freshrss_download_status
+  until: _freshrss_download_status | success
+  retries: 3
+  delay: 10
+
+- name: install php5 dependencies
+  apt:
+    pkg: "{{ item }}"
+    state: present
+  with_items:
+    - php5-curl
+    - php5-gmp # needed to enable api for easyrss android application
+  become: yes
+  notify: restart apache2
+
+- name: enable mod_rewrite
+  apache2_module:
+    name: rewrite
+    state: present
+  become: yes
+  notify: restart apache2
+
+- name: create directory for apps datastore
+  file:
+    path: "{{ _freshrss.datastore_apps_path }}"
+    owner: "{{ _freshrss.ops_user }}"
+    group: "{{ _freshrss.ops_group }}"
+    mode: "{{ _freshrss.datastore_apps_mode }}"
+    state: directory
+  become: yes
+
+- name: create directory for config and data
+  file:
+    path: "{{ _freshrss.data_path }}"
+    owner: www-data
+    group: www-data
+    mode: u=rwx,g=rx,o=
+    state: directory
+  become: yes
+
+- name: check if original data directoy is a symlink
+  stat:
+     path: "{{ _freshrss.install_path }}/data"
+  register: _original_data_directory_symlink
+
+- name: check if new data directoy is empty
+  stat:
+     path: "{{ _freshrss.data_path }}/index.html"
+  register: _new_data_directory_empty
+
+- name: remove directory for config and data
+  file:
+    path: "{{ _freshrss.data_path }}"
+    state: absent
+  when: _new_data_directory_empty.stat.exists == false # remove the data directory if it is empty
+  become: yes
+
+- name: move data directory
+  command: mv {{ _freshrss.install_path }}/data {{ _freshrss.data_path }}
+  args:
+    creates: "{{ _freshrss.data_path }}"
+  when: _original_data_directory_symlink.stat.islnk is defined and _original_data_directory_symlink.stat.islnk == false
+  become: yes
+
+- name: delete original data directory
+  file:
+    path: "{{ _freshrss.install_path }}/data"
+    state: absent
+  when: _original_data_directory_symlink.stat.isdir is defined and _original_data_directory_symlink.stat.isdir
+
+- name: create symlinks for data directory
+  file:
+    src: "{{ _freshrss.data_path }}"
+    dest: "{{ _freshrss.install_path }}/data"
+    state: link
+    force: yes
+
+- name: set data directory tree readable by owner and group
+  file:
+    path: "{{ _freshrss.data_path }}"
+    owner: www-data
+    group: www-data
+    mode: u=rwX,g=rX,o=
+    recurse: yes
+  become: yes
+
+- name: generate or update freshrss.conf configuration file
+  template:
+    src: freshrss.conf.j2
+    dest: /etc/apache2/{{ _freshrss.apache_services_available_segment }}/freshrss.conf
+  become: yes
+  notify: restart apache2
+
+- name: create symlinks for freshrss apache conf
+  file:
+    src: ../{{ _freshrss.apache_services_available_segment }}/freshrss.conf
+    dest: /etc/apache2/{{ _freshrss.apache_services_enabled_segment }}/freshrss.conf
+    state: link
+  become: yes
+  notify: restart apache2
+
+- name: create symlinks for web space
+  file:
+    src: "{{ _freshrss.install_path }}/p/"
+    dest: "{{ _freshrss.apache_path }}"
+    state: link
+  become: yes
+
+# use shell task and umask workaround to set correct umask on generated files and directories
+- name: process installation
+  shell: "umask u=rwx,g=rx,o= && {{ _freshrss.install_path }}/cli/do-install.php --default_user {{ _freshrss.end_user.login }} --language {{ _freshrss.locale }} --api_enabled --db-type sqlite"
+  args:
+    removes: "{{ _freshrss.data_path }}/do-install.txt"
+  become: yes
+  become_user: www-data
+
+- name: check if the user exists
+  command: "{{ _freshrss.install_path }}/cli/user-info.php -h --user {{ _freshrss.end_user.login }}"
+  register: freshrss_user_data
+  changed_when: freshrss_user_data.rc > 1
+  failed_when: freshrss_user_data.rc > 1
+  become: yes
+  become_user: www-data
+
+# use shell task and umask workaround to set correct umask on generated files and directories
+- name: create user
+  shell: "umask u=rwx,g=rx,o= && {{ _freshrss.install_path }}/cli/create-user.php --user {{ _freshrss.end_user.login }} --password '{{ _freshrss.end_user.password }}' --api_password '{{ _freshrss.end_user.password }}' --language {{ _freshrss.locale }} --email {{ _freshrss.end_user.email }} --token {{ _freshrss.token }}"
+  when: freshrss_user_data.rc == 1
+  become: yes
+  become_user: www-data
+
+# use umask workaround to set correct umask on generated files and directories
+- name: create a cron job
+  cron:
+    name: freshrss cron job
+    cron_file: freshrss
+    user: www-data
+    minute: 0
+    job: umask u=rwx,g=rx,o= && php -f {{ _freshrss.install_path }}/app/actualize_script.php > /tmp/freshrss.log 2>&1
+    state: present
+  become: yes
+
+- name: check that apache config is valid
+  command: apache2ctl configtest
+  changed_when: false
+  become: yes
