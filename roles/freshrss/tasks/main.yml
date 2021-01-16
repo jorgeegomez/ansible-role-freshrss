@@ -37,20 +37,22 @@
   template:
     src: freshrss_nginx.conf.j2
     dest: /etc/nginx/sites-available/freshrss
-  notify: Restart nginx
 
 - name: Disable default nginx configuration
   file:
     path: /etc/nginx/sites-enabled/default
     state: absent
-  notify: Restart nginx
 
 - name: Enable nginx configuration
   file:
     src: /etc/nginx/sites-available/freshrss
     dest: /etc/nginx/sites-enabled/freshrss
     state: link
-  notify: Restart nginx
+    
+- name: Restart nginx
+  systemd:
+    name: nginx
+    state: restarted
 
 # -----------------------------------------------------------------------------
 # Postgresql
