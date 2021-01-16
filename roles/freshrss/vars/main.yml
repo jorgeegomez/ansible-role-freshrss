@@ -25,4 +25,3 @@ packages:
   - php-xmlwriter
   - php-tokenizer
   - php-pgsql
-  - php-fpm

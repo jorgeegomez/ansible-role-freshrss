@@ -5,6 +5,11 @@
     dest: '{{ install_path }}'
     depth: 1
 
+- name: Install PHP FastCGI to prevent apache from being installed
+  apt:
+    pkg: 'php-fpm'
+    state: latest
+
 - name: Install PHP dependencies
   apt:
     pkg: '{{ packages }}'
