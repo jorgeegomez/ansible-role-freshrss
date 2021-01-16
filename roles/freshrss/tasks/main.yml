@@ -63,16 +63,21 @@
       - python3-psycopg2
     state: latest
 
-- name: Generate and announce random password
+- name: Generate random password
+  set_fact:
+    cacheable: yes
+    dbuser_password: "{{ lookup('password', '/tmp/dbpassword length=24') }}"
+
+- name: Announce generated password to the user
   debug:
-    msg: "Password is {{ lookup('password', '/tmp/passwordfile length=24') }}"
+    msg: "PostgreSQL user password is {{ dbuser_password }}"
 
 - name: Create PostgreSQL user
   become: true
   become_user: postgres
   postgresql_user:
     name: freshrss
-    password: "{{ lookup('password', '/tmp/passwordfile length=24') }}"
+    password: "{{ dbuser_password }}"
     role_attr_flags: CREATEDB,NOSUPERUSER
   no_log: True
 
@@ -82,43 +87,3 @@
   postgresql_db:
     name: freshrss
     owner: freshrss
-
-- name: Stop Playbook
-  fail:
-    msg: Ignore rest of the playbook
-
-# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- name: process installation
-  shell: "umask u=rwx,g=rx,o= && {{ install_path }}/cli/do-install.php --default_user {{ _freshrss.end_user.login }} --language {{ _freshrss.locale }} --api_enabled --db-type sqlite"
-  args:
-    removes: "{{ data_path }}/do-install.txt"
-  become: yes
-  become_user: www-data
-
-- name: check if the user exists
-  command: "{{ install_path }}/cli/user-info.php -h --user {{ _freshrss.end_user.login }}"
-  register: freshrss_user_data
-  changed_when: freshrss_user_data.rc > 1
-  failed_when: freshrss_user_data.rc > 1
-  become: yes
-  become_user: www-data
-
-# use shell task and umask workaround to set correct umask on generated files and directories
-- name: create user
-  shell: "umask u=rwx,g=rx,o= && {{ install_path }}/cli/create-user.php --user {{ _freshrss.end_user.login }} --password '{{ _freshrss.end_user.password }}' --api_password '{{ _freshrss.end_user.password }}' --language {{ _freshrss.locale }} --email {{ _freshrss.end_user.email }} --token {{ _freshrss.token }}"
-  when: freshrss_user_data.rc == 1
-  become: yes
-  become_user: www-data
-
-# use umask workaround to set correct umask on generated files and directories
-- name: create a cron job
-  cron:
-    name: freshrss cron job
-    cron_file: freshrss
-    user: www-data
-    minute: 0
-    job: umask u=rwx,g=rx,o= && php -f {{ install_path }}/app/actualize_script.php > /tmp/freshrss.log 2>&1
-    state: present
-  become: yes
-
