@@ -73,7 +73,7 @@
 - name: Generate random password
   set_fact:
     cacheable: yes
-    dbuser_password: "{{ lookup('password', '/tmp/dbpassword length=24') }}"
+    dbuser_password: "{{ lookup('password', '/tmp/dbpassword length=24 chars=ascii_letters') }}"
 
 - name: Announce generated password to the user
   debug:
